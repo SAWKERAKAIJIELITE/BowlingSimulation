@@ -48,14 +48,18 @@ const debug = {
     initialBallZ: 6,
     initialVelocityX: 0,
     initialVelocityZ: -6,
-    initialAngularSpeed: 0,
+    initialAngularSpeedX: 0,
+    initialAngularSpeedY: 0,
+    initialAngularSpeedZ: 0,
     frictionCoefficient: 0.08,
 
     positionX: 0,
     positionZ: 6,
     velocityX: 0,
     velocityZ: 0,
-    angularSpeed: 0,
+    angularVelocityX:0,
+    angularVelocityY:0,
+    angularVelocityZ:0,
 
     ballMass: 7,
     pinMass: 1.5,
@@ -84,7 +88,14 @@ const debug = {
     {
         if (!ballState.isMoving && !ballState.hasCollided)
         {
-            startBall(ballState, debug.initialVelocityX, debug.initialVelocityZ, debug.initialAngularSpeed);
+            startBall(
+                ballState,
+                debug.initialVelocityX,
+                debug.initialVelocityZ,
+                debug.initialAngularSpeedX,
+                debug.initialAngularSpeedY,
+                debug.initialAngularSpeedZ
+            );
             debug.hasStarted = true;
         }
     },
@@ -114,7 +125,9 @@ const gui = new GUI();
 const motionFolder = gui.addFolder('Ball Motion');
 motionFolder.add(debug, 'initialVelocityX', -10, 10, 0.1);
 motionFolder.add(debug, 'initialVelocityZ', -20, 0, 0.1);
-motionFolder.add(debug, 'initialAngularSpeed', 0, 80, 0.1);
+motionFolder.add(debug, 'initialAngularSpeedX', 0, 80, 0.1);
+motionFolder.add(debug, 'initialAngularSpeedY', 0, 80, 0.1);
+motionFolder.add(debug, 'initialAngularSpeedZ', 0, 80, 0.1);
 motionFolder.add(debug, 'frictionCoefficient', 0, 0.3, 0.01);
 motionFolder.add(
     debug,
@@ -156,7 +169,9 @@ monitorFolder.add(debug, 'positionX').listen();
 monitorFolder.add(debug, 'positionZ').listen();
 monitorFolder.add(debug, 'velocityX').listen();
 monitorFolder.add(debug, 'velocityZ').listen();
-monitorFolder.add(debug, 'angularSpeed').listen();
+monitorFolder.add(debug, 'angularVelocityX').listen();
+monitorFolder.add(debug, 'angularVelocityY').listen();
+monitorFolder.add(debug, 'angularVelocityZ').listen();
 monitorFolder.add(debug, 'isRolling').listen();
 monitorFolder.add(debug, 'pinPositionX').listen();
 monitorFolder.add(debug, 'pinPositionZ').listen();
@@ -185,20 +200,22 @@ const rollingAxis = new THREE.Vector3();
 
 function updateBallVisualRotation(dt)
 {
-    const vx = ballState.velocity.x;
-    const vz = ballState.velocity.y;
+    const omega = ballState.angularVelocity;
 
-    const speedSq = vx * vx + vz * vz;
+    const omegaMagnitude = omega.length();
 
-    if (speedSq < 1e-8) return;
+    if (omegaMagnitude < 1e-8) return;
 
-    // Rolling axis for motion on x-z plane:
-    // axis = up × direction
-    rollingAxis.set(vz, 0, -vx).normalize();
+    // Normalize angular velocity -> rotation axis
+    rollingAxis.copy(omega).normalize();
 
-    const angle = ballState.angularSpeed * dt;
+    // angle = ω * dt
+    const angle = omegaMagnitude * dt;
 
-    objects.ball.mesh.rotateOnWorldAxis(rollingAxis, angle);
+    objects.ball.mesh.rotateOnWorldAxis(
+        rollingAxis,
+        angle
+    );
 }
 
 let accumulator = 0;
@@ -213,7 +230,7 @@ function stepPhysics(dt)
 
     if (!debug.hasStarted)
     {
-        if (8 < debug.initialBallZ)
+        if (0 < debug.initialBallZ)
         {
             ballState.frictionCoefficient = debug.frictionCoefficient;
         }
@@ -307,7 +324,7 @@ function stepPhysics(dt)
     // console.log(objects.ball.radius);
     pinState.laneFriction = debug.pinLaneFriction;
 
-    applyPinLaneFrictionTorque(pinState, dt, objects.pin.height);
+    // applyPinLaneFrictionTorque(pinState, dt, objects.pin.height);
     updatePinMotion(pinState, dt);
     updatePinAngularMotion(
         pinState,
@@ -376,7 +393,9 @@ function render()
     debug.positionZ = ballState.position.y;
     debug.velocityX = ballState.velocity.x;
     debug.velocityZ = ballState.velocity.y;
-    debug.angularSpeed = ballState.angularSpeed;
+    debug.angularVelocityX = ballState.angularVelocity.x;
+    debug.angularVelocityY = ballState.angularVelocity.y;
+    debug.angularVelocityZ = ballState.angularVelocity.z;
     debug.isRolling = ballState.isRolling;
 
     debug.pinPositionX = pinState.position.x;
