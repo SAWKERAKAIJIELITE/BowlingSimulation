@@ -10,10 +10,15 @@ export function createBallState(initialX = 0, initialZ = 6, frictionCoefficient 
         velocity: new THREE.Vector2(0, 0),
         angularVelocity: new THREE.Vector3(0, 0, 0),
         frictionCoefficient: frictionCoefficient,
+        laneFrictionCoefficient: frictionCoefficient,
+        gutterFrictionCoefficient: frictionCoefficient * 2,
         isRolling: false,
         isMoving: false,
         hasCollided: false,
-        collisionPoint: null
+        collisionPoint: null,
+        isInGutter: false,
+        gutterCenterX: 0,
+        gutterEntered: false
     };
 }
 
@@ -43,7 +48,7 @@ export function startBall(
 {
     ballState.velocity.set(initialVelocityX, initialVelocityZ);
     ballState.angularVelocity.set(initialAngularSpeedX, initialAngularSpeedY, initialAngularSpeedZ);
-    ballState.isMoving = ballState.velocity.lengthSq() > 0;
+    ballState.isMoving = ballState.velocity.lengthSq() > 0 || ballState.angularVelocity.lengthSq() > 0;
     ballState.isRolling = false;
 }
 
@@ -57,6 +62,9 @@ export function resetBall(ballState, initialX = 0, initialZ = 6)
     ballState.collisionPoint = null;
     ballState.angularVelocity.set(0, 0, 0);
     ballState.isRolling = false;
+    ballState.isInGutter = false;
+    ballState.gutterEntered = false;
+    ballState.frictionCoefficient = ballState.laneFrictionCoefficient;
 }
 
 export function resetPin(pinState, initialX = 0, initialZ = -6)
@@ -70,50 +78,92 @@ export function resetPin(pinState, initialX = 0, initialZ = -6)
     pinState.isFalling = false;
 }
 
+export function updateGutterState(ballState, laneWidth, ballRadius)
+{
+    const halfLane = laneWidth * 0.5;
+
+    if (
+        Math.abs(ballState.position.x) > halfLane &&
+        !ballState.isInGutter
+    )
+    {
+        const side = Math.sign(ballState.position.x) || 1;
+
+        ballState.isInGutter = true;
+        ballState.gutterEntered = true;
+
+        ballState.gutterCenterX = side * (halfLane + ballRadius * 0.6);
+    }
+}
+
 export function updateBallMotion(ballState, dt, ballRadius)
 {
     if (!ballState.isMoving) return;
 
+    if (ballState.gutterEntered)
+    {
+        // impact loss
+        ballState.velocity.multiplyScalar(0.88);
+
+        // lose some spin
+        ballState.angularVelocity.multiplyScalar(0.9);
+
+        ballState.frictionCoefficient = ballState.gutterFrictionCoefficient;
+
+        ballState.gutterEntered = false;
+    }
+
     ballState.previousPosition.copy(ballState.position);
 
     const speed = ballState.velocity.length();
-    if (speed <= 1e-6)
+    if (speed <= 1e-6 && ballState.angularVelocity.lengthSq() <= 1e-6)
     {
         ballState.velocity.set(0, 0);
         ballState.angularVelocity.set(0, 0, 0);
         ballState.isMoving = false;
         return;
     }
+
+    if (ballState.isInGutter)
+    {
+        // kill sideways velocity gradually// lock x toward gutter center
+        const dx = ballState.gutterCenterX - ballState.position.x;
+
+        ballState.position.x += dx * Math.min(1, 8 * dt);
+
+        // remove lateral velocity
+        ballState.velocity.x *= Math.max(0, 1 - 10 * dt);
+
+        if (Math.abs(ballState.velocity.x) < 0.01)
+            ballState.velocity.x = 0;
+    }
+
     const rotationalSlip = new THREE.Vector2(
         ballRadius * ballState.angularVelocity.z,
         -ballRadius * ballState.angularVelocity.x
     );
+
     const contactVelocity = ballState.velocity.clone().add(rotationalSlip);
 
-    // const rollingSpeed = ballState.angularSpeed * ballRadius;
-    // const omega = ballState.angularVelocity.z;
-    // const slipSpeed = speed - omega * ballRadius;
     const slipSpeed = contactVelocity.length();
 
-    // const direction = ballState.velocity.clone().normalize();
-
     // If slip is almost zero, treat as rolling.
-    if (Math.abs(slipSpeed) < 0.2)
+    if (Math.abs(slipSpeed) < 0.1)
     {
         ballState.isRolling = true;
 
         // Simple rolling resistance, much weaker than sliding friction
         const rollingResistance = 0.15;
 
-        // const direction = speed > 1e-8
-        //     ? ballState.velocity.clone().normalize()
-        //     : new THREE.Vector2(0, 0);
+        const newSpeed = Math.max(0, speed - rollingResistance * dt);
+
+        ballState.velocity.setLength(newSpeed);
 
         ballState.angularVelocity.x = ballState.velocity.y / ballRadius;
 
         ballState.angularVelocity.z = -ballState.velocity.x / ballRadius;
 
-        const newSpeed = Math.max(0, speed - rollingResistance * dt);
+        ballState.position.addScaledVector(ballState.velocity, dt);
 
         if (newSpeed <= 1e-4)
         {
@@ -121,34 +171,35 @@ export function updateBallMotion(ballState, dt, ballRadius)
             ballState.angularVelocity.set(0, 0, 0);
             ballState.isMoving = false;
         }
-
-        ballState.velocity.setLength(newSpeed);
-
-        // keep exact rolling relation after slowing
-        ballState.angularVelocity.x = ballState.velocity.y / ballRadius;
-
-        ballState.angularVelocity.z = -ballState.velocity.x / ballRadius;
-
-        ballState.position.addScaledVector(ballState.velocity, dt);
         return;
     }
 
     ballState.isRolling = false;
 
     const mu = ballState.frictionCoefficient;
-    // const frictionDirection = -Math.sign(slipSpeed);
     const frictionDir = contactVelocity.clone().normalize().negate();
     const acceleration = frictionDir.multiplyScalar(mu * g);
-    // Linear motion update
+
     ballState.velocity.addScaledVector(
         acceleration,
         dt
     );
 
-    if (ballState.velocity.dot(ballState.previousPosition.clone().sub(ballState.position)) > 0)
-    {
-        ballState.velocity.set(0, 0);
-    }
+    // if (ballState.velocity.dot(ballState.previousPosition.clone().sub(ballState.position)) > 0)
+    // {
+    //     console.log(ballState.velocity.dot(ballState.previousPosition.clone().sub(ballState.position)));
+    //     ballState.velocity.set(0, 0);
+    // }
+    // const dv = acceleration.clone().multiplyScalar(dt);
+
+    // if (dv.lengthSq() >= ballState.velocity.lengthSq())
+    // {
+    //     ballState.velocity.set(0, 0);
+    // }
+    // else
+    // {
+    //     ballState.velocity.add(dv);
+    // }
 
     const torque = new THREE.Vector3(
         -ballRadius * acceleration.y,
@@ -156,77 +207,17 @@ export function updateBallMotion(ballState, dt, ballRadius)
         ballRadius * acceleration.x
     );
 
-    // const frictionForce = mu * g * frictionDirection;
-
-    // const linearAcceleration = frictionForce;
-
-    // Torque = R*F
-    // const torque = ballRadius * (-frictionForce);
     // Solid sphere:
     const inertia = (2 / 5) * ballRadius * ballRadius;
 
-    // α = τ / I
     const angularAcceleration = torque.multiplyScalar(1 / inertia);
-
-    // let newSpeed = Math.max(0, speed + linearAcceleration * dt);
-    // let newOmega = Math.max(0, omega + angularAcceleration * dt);
-
-    // if (slipSpeed > 0)
-    // {
-    //     // Ball center is moving faster than surface rotation.
-    //     // Friction slows translation and increases spin.
-    //     newSpeed = Math.max(0, speed - linearDeceleration * dt);
-    //     newAngularSpeed = ballState.angularSpeed + angularAcceleration * dt;
-
-    //     if (newSpeed < newAngularSpeed * ballRadius)
-    //     {
-    //         newSpeed = (speed + (2 / 5) * ballRadius * ballState.angularSpeed) / (1 + 2 / 5);
-    //         newAngularSpeed = newSpeed / ballRadius;
-    //         ballState.isRolling = true;
-    //     }
-    // } else
-    // {
-    //     // Ball has too much spin compared to translation.
-    //     // Friction increases translation and reduces spin.
-    //     newSpeed = speed + linearDeceleration * dt;
-    //     newAngularSpeed = Math.max(0, ballState.angularSpeed - angularAcceleration * dt);
-
-    //     if (newSpeed > newAngularSpeed * ballRadius)
-    //     {
-    //         newSpeed = (speed + (2 / 5) * ballRadius * ballState.angularSpeed) / (1 + 2 / 5);
-    //         newAngularSpeed = newSpeed / ballRadius;
-    //         ballState.isRolling = true;
-    //     }
-    // }
-
-    // // Clamp exactly at rolling condition
-    // if (
-    //     (slipSpeed > 0 && newSpeed < newOmega * ballRadius) ||
-    //     (slipSpeed < 0 && newSpeed > newOmega * ballRadius)
-    // )
-    // {
-    //     newSpeed =
-    //         (speed + (2 / 5) * ballRadius * omega) /
-    //         (1 + 2 / 5);
-
-    //     newOmega = newSpeed / ballRadius;
-
-    //     ballState.isRolling = true;
-    // }
 
     ballState.angularVelocity.addScaledVector(
         angularAcceleration,
         dt
     );
-    // ballState.velocity.copy(direction).multiplyScalar(newSpeed);
-    // ballState.angularVelocity.z = newOmega;
 
     ballState.position.addScaledVector(ballState.velocity, dt);
-    if (ballState.velocity.lengthSq() < 1e-8)
-    {
-        ballState.velocity.set(0, 0);
-        ballState.isMoving = false;
-    }
 }
 
 export function updatePinMotion(pinState, dt)
@@ -281,7 +272,6 @@ export function detectBallPinCollision(ballState, ballRadius, pinState, pinRadiu
     tempMovement.copy(end).sub(start);
     const a = tempMovement.dot(tempMovement);
 
-    // Ball did not move this frame
     if (a === 0)
     {
         const distanceSq = start.distanceToSquared(center);
@@ -292,7 +282,6 @@ export function detectBallPinCollision(ballState, ballRadius, pinState, pinRadiu
         };
     }
 
-    // Project pin center onto ball movement segment
     startToCenter.copy(start).sub(center);
 
     const b = 2 * startToCenter.dot(tempMovement);
@@ -340,7 +329,6 @@ const zeroImpulse = new THREE.Vector2(0, 0);
 
 export function resolve2DCollision(ballState, pinState, ballMass, pinMass, restitution)
 {
-    // Normal from pin center to ball center
     collisionNormal.copy(ballState.position).sub(pinState.position);
     // collisionNormal.copy(pinState.position).sub(ballState.position);
 
@@ -390,6 +378,10 @@ export function resolve2DCollision(ballState, pinState, ballMass, pinMass, resti
     // pinState.velocity.addScaledVector(impulseVector, invPinMass);
 
     ballState.isMoving = ballState.velocity.lengthSq() > 1e-8;
+    if (!ballState.isMoving)
+    {
+        ballState.angularVelocity.set(0, 0, 0);
+    }
     pinState.isMoving = pinState.velocity.lengthSq() > 1e-8;
 
     return {
@@ -412,7 +404,7 @@ export function applyPinAngularImpulse(
 
     contactOffset3D.set(
         0,
-        -contactHeightFromLaneTop,
+        contactHeightFromLaneTop,
         0
     );
 
@@ -464,7 +456,14 @@ export function updatePinAngularMotion(
     if (angle > 1e-5)
     {
         const magnitude =
-            (g * (pinHeight / 2) * Math.sin(angle)) / Ipivot;
+            (g * (
+                // (
+                //     pinRadius * Math.cos(angle)
+                // )
+                //  - (
+                (pinHeight / 2) * Math.sin(angle)
+                // )
+            )) / Ipivot;
 
         if (angle < criticalAngle)
         {

@@ -13,6 +13,11 @@ const DIMENSIONS = {
     pin: {
         radius: 0.12,
         height: 0.8
+    },
+    gutter: {
+        gutterWidth: 0.6,
+        gutterDepth: 0.3,
+        gutterLength: 20
     }
 };
 
@@ -23,11 +28,44 @@ export function createBowlingObjects()
     const lane = createLane();
     const ball = createBall(laneTopY);
     const pin = createPin(laneTopY);
+    const gutters = createGutters();
 
     return {
         lane,
         ball,
-        pin
+        pin,
+        gutters
+    };
+}
+
+function createGutters()
+{
+    const { gutterWidth, gutterDepth, gutterLength } = DIMENSIONS.gutter;
+
+    const gutterGeometry = new THREE.BoxGeometry(gutterWidth, gutterDepth, gutterLength);
+    const gutterMaterial = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 1.0, metalness: 0.1 });
+    const leftGutter = new THREE.Mesh(gutterGeometry, gutterMaterial);
+    const rightGutter = new THREE.Mesh(gutterGeometry, gutterMaterial);
+
+    const halfLane = DIMENSIONS.lane.width * 0.5;
+
+    leftGutter.position.set(
+        -halfLane - gutterWidth / 2,
+        -gutterDepth / 2,
+        0
+    );
+
+    rightGutter.position.set(
+        halfLane + gutterWidth / 2,
+        -gutterDepth / 2,
+        0
+    );
+
+    return {
+        left: leftGutter,
+        right: rightGutter,
+        width: gutterWidth,
+        depth: gutterDepth
     };
 }
 
@@ -101,7 +139,7 @@ function createPin(laneTopY)
     pivot.add(cylinder);
 
     // Pivot is placed on lane surface.
-    pivot.position.set(0, laneTopY, -6);
+    pivot.position.set(0, laneTopY, -9);
 
     return {
         type: 'pin',

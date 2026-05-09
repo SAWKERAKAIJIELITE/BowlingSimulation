@@ -9,6 +9,7 @@ import
     createPinState,
     updateBallMotion,
     updatePinMotion,
+    updateGutterState,
     startBall,
     resetBall,
     resetPin,
@@ -31,7 +32,7 @@ const laneTopY = objects.lane.size.height / 2;
 
 const ballDirectionArrow = new THREE.ArrowHelper(
     new THREE.Vector3(0, 0, -1), // initial direction
-    objects.ball.mesh.position.clone(), // origin
+    objects.ball.mesh.position.clone(),
     1, // length
     0xff0000
 );
@@ -42,6 +43,10 @@ scene.add(ballDirectionArrow);
 scene.add(objects.lane.mesh);
 scene.add(objects.ball.mesh);
 scene.add(objects.pin.mesh);
+scene.add(objects.gutters.left);
+scene.add(objects.gutters.right);
+
+const gutterDrop = objects.gutters.depth;
 
 const debug = {
     initialBallX: 0,
@@ -57,16 +62,16 @@ const debug = {
     positionZ: 6,
     velocityX: 0,
     velocityZ: 0,
-    angularVelocityX:0,
-    angularVelocityY:0,
-    angularVelocityZ:0,
+    angularVelocityX: 0,
+    angularVelocityY: 0,
+    angularVelocityZ: 0,
 
     ballMass: 7,
     pinMass: 1.5,
     restitution: 0.4,
 
     initialPinX: 0,
-    initialPinZ: -6,
+    initialPinZ: -9,
     pinPositionX: 0,
     pinPositionZ: -6,
     pinVelocityX: 0,
@@ -105,6 +110,7 @@ const debug = {
         resetPin(pinState, debug.initialPinX, debug.initialPinZ);
         objects.ball.mesh.position.x = ballState.position.x;
         objects.ball.mesh.position.z = ballState.position.y;
+        objects.ball.mesh.rotation.set(0, 0, 0);
         objects.pin.mesh.position.x = pinState.position.x;
         objects.pin.mesh.position.z = pinState.position.y;
         ballDirectionArrow.position.copy(objects.ball.mesh.position)
@@ -184,11 +190,9 @@ monitorFolder.add(debug, 'fallAngle').listen();
 monitorFolder.add(debug, 'isFalling').listen();
 monitorFolder.add(debug, 'pinAngularSpeed').listen();
 
-// Physics state for the ball
 const ballState = createBallState(debug.initialBallX, debug.initialBallZ, debug.frictionCoefficient);
 const pinState = createPinState(debug.initialPinX, debug.initialPinZ);
 
-// Optional: put the mesh exactly where the physics starts
 objects.ball.mesh.position.x = ballState.position.x;
 objects.ball.mesh.position.z = ballState.position.y;
 objects.pin.mesh.position.x = pinState.position.x;
@@ -209,7 +213,6 @@ function updateBallVisualRotation(dt)
     // Normalize angular velocity -> rotation axis
     rollingAxis.copy(omega).normalize();
 
-    // angle = ω * dt
     const angle = omegaMagnitude * dt;
 
     objects.ball.mesh.rotateOnWorldAxis(
@@ -237,13 +240,11 @@ function stepPhysics(dt)
         else
         {
             ballState.frictionCoefficient = debug.frictionCoefficient * 3;
-            // console.log(ballState.frictionCoefficient);
         }
         ballState.position.x = debug.initialBallX;
         ballState.position.y = debug.initialBallZ;
 
         const velocityLength = new THREE.Vector2(debug.initialVelocityX, debug.initialVelocityZ).length();
-        // console.log(velocityLength);
 
         ballDirectionArrow.position.copy(objects.ball.mesh.position);
 
@@ -264,11 +265,10 @@ function stepPhysics(dt)
         }
     }
 
-    // Update motion
+    updateGutterState(ballState, objects.lane.size.width, objects.ball.radius);
     updateBallMotion(ballState, dt, objects.ball.radius);
     updateBallVisualRotation(dt);
 
-    // Collision
     if (ballState.isMoving && !ballState.hasCollided)
     {
         const collisionResult = detectBallPinCollision(
@@ -282,7 +282,6 @@ function stepPhysics(dt)
         {
             ballState.hasCollided = true;
 
-            // Move to exact contact point
             const t = collisionResult.timeOfImpact;
 
             const startX = ballState.previousPosition.x;
@@ -305,7 +304,6 @@ function stepPhysics(dt)
                 debug.pinMass,
                 debug.restitution
             );
-            // console.log(...response.pinImpulse);
 
             applyPinAngularImpulse(
                 pinState,
@@ -318,10 +316,8 @@ function stepPhysics(dt)
 
             debug.collision = true;
             objects.pin.visualMesh.material.color.set(0xff3333);
-            console.log('2D collision detected at ' + ballState.position.x, ballState.position.y);
         }
     }
-    // console.log(objects.ball.radius);
     pinState.laneFriction = debug.pinLaneFriction;
 
     // applyPinLaneFrictionTorque(pinState, dt, objects.pin.height);
@@ -338,9 +334,12 @@ function render()
 {
     cameraControls.update(FIXED_DT);
 
-    // Sync physics → rendering
     objects.ball.mesh.position.x = ballState.position.x;
     objects.ball.mesh.position.z = ballState.position.y;
+    objects.ball.mesh.position.y =
+        laneTopY +
+        objects.ball.radius -
+        (ballState.isInGutter ? gutterDrop : 0);
 
     objects.pin.mesh.position.x = pinState.position.x;
     objects.pin.mesh.position.y = laneTopY;
@@ -350,16 +349,6 @@ function render()
 
     if (pinState.fallAngle > 0)
     {
-        // if (pinState.angularVelocity.lengthSq() > 1e-8)
-        // {
-        //     pinRotationAxis.copy(pinState.angularVelocity).normalize();
-        // } else
-        // {
-        //     pinRotationAxis.set(1, 0, 0);
-        // }
-
-        // objects.pin.mesh.setRotationFromAxisAngle(pinRotationAxis, pinState.fallAngle);
-
         objects.pin.mesh.setRotationFromAxisAngle(
             pinState.fallAxis,
             pinState.fallAngle
@@ -388,7 +377,7 @@ function render()
             ballDirectionArrow.visible = false;
         }
     }
-    // GUI updates
+
     debug.positionX = ballState.position.x;
     debug.positionZ = ballState.position.y;
     debug.velocityX = ballState.velocity.x;
